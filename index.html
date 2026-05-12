@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GESTURAX | AI Gesture Controller</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        :root {
+            --primary: #00f2fe;
+            --secondary: #4facfe;
+            --bg: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: white;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #dashboard {
+            width: 90%;
+            max-width: 1200px;
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 24px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            border-radius: 16px;
+            overflow: hidden;
+            background: #000;
+            aspect-ratio: 16 / 9;
+        }
+
+        #input_video {
+            display: none;
+        }
+
+        #output_canvas {
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); /* Mirror view */
+        }
+
+        .status-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2rem;
+            background: linear-gradient(to right, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .status-label { color: #94a3b8; font-size: 0.9rem; }
+        .status-value { font-weight: 600; color: var(--primary); }
+
+        .gesture-indicator {
+            padding: 20px;
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .gesture-active {
+            background: var(--primary);
+            color: var(--bg);
+            box-shadow: 0 0 20px var(--primary);
+        }
+
+        .instructions {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            line-height: 1.5;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: auto;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            background: var(--secondary);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+
+    <div id="dashboard">
+        <div class="video-container">
+            <video id="input_video"></video>
+            <canvas id="output_canvas"></canvas>
+        </div>
+
+        <div class="status-panel">
+            <div class="header">
+                <h1>GESTURAX</h1>
+                <p style="color: #94a3b8; margin: 5px 0 0 0;">Next-Gen Gesture Control</p>
+            </div>
+
+            <div class="status-card">
+                <div class="status-item">
+                    <span class="status-label">Server Status:</span>
+                    <span id="server_status" class="status-value">Connecting...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Hand Detected:</span>
+                    <span id="hand_detected" class="status-value">No</span>
+                </div>
+            </div>
+
+            <div id="gesture_display" class="gesture-indicator">
+                NO GESTURE
+            </div>
+
+            <div class="instructions">
+                <strong>Controls:</strong><br>
+                • Index Move: Move Cursor<br>
+                • Index-Thumb Pinch: Left Click<br>
+                • Two Fingers Up: Scroll Mode
+            </div>
+
+            <div class="controls">
+                <button onclick="toggleCamera()">Stop Camera</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const serverStatus = document.getElementById('server_status');
+        const handDetected = document.getElementById('hand_detected');
+        const gestureDisplay = document.getElementById('gesture_display');
+
+        const socket = io('http://localhost:5000');
+
+        socket.on('connect', () => {
+            serverStatus.textContent = 'Connected';
+            serverStatus.style.color = '#10b981';
+        });
+
+        socket.on('disconnect', () => {
+            serverStatus.textContent = 'Disconnected';
+            serverStatus.style.color = '#ef4444';
+        });
+
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handDetected.textContent = 'Yes';
+                const landmarks = results.multiHandLandmarks[0];
+
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00f2fe', lineWidth: 5});
+                drawLandmarks(canvasCtx, landmarks, {color: '#ffffff', lineWidth: 2, radius: 4});
+
+                // Get key points
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                const indexPip = landmarks[6];
+                const middlePip = landmarks[10];
+
+                // Scaling logic: Use a central 70% area for mapping to full screen
+                // This allows the finger to reach corners without moving hand out of frame
+                const margin = 0.15; // 15% margin on all sides
+                let mirroredX = 1 - indexTip.x;
+                let scaledX = (mirroredX - margin) / (1 - 2 * margin);
+                let scaledY = (indexTip.y - margin) / (1 - 2 * margin);
+
+                // Clamp values between 0 and 1
+                scaledX = Math.max(0, Math.min(1, scaledX));
+                scaledY = Math.max(0, Math.min(1, scaledY));
+
+                // Gesture detection
+                let gesture = 'none';
+                const pinchDist = getDistance(thumbTip, indexTip);
+                
+                // Pinch detection (Left Click)
+                if (pinchDist < 0.04) {
+                    gesture = 'pinch';
+                    gestureDisplay.textContent = 'CLICK (PINCH)';
+                    gestureDisplay.classList.add('gesture-active');
+                } 
+                // Scroll Detection (Two fingers up and close together)
+                else if (indexTip.y < indexPip.y && middleTip.y < middlePip.y) {
+                    // Check if they are "pointing up" (y is smaller than pip)
+                    const fingerDist = getDistance(indexTip, middleTip);
+                    if (fingerDist < 0.08) {
+                        // Scroll logic based on movement of the pair?
+                        // For now, just flag it. The backend handles scroll.
+                        // We'll calculate a scroll delta based on Y position
+                        if (indexTip.y < 0.4) gesture = 'scroll_up';
+                        else if (indexTip.y > 0.6) gesture = 'scroll_down';
+                        else gesture = 'scroll_ready';
+                        
+                        gestureDisplay.textContent = 'SCROLL MODE';
+                        gestureDisplay.classList.add('gesture-active');
+                    } else {
+                        gestureDisplay.textContent = 'TRACKING';
+                        gestureDisplay.classList.remove('gesture-active');
+                    }
+                }
+                else {
+                    gestureDisplay.textContent = 'TRACKING';
+                    gestureDisplay.classList.remove('gesture-active');
+                }
+
+                // Send data to backend
+                socket.emit('gesture_data', {
+                    x: scaledX,
+                    y: scaledY,
+                    gesture: gesture
+                });
+
+            } else {
+                handDetected.textContent = 'No';
+                gestureDisplay.textContent = 'NO HAND';
+                gestureDisplay.classList.remove('gesture-active');
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        camera.start();
+
+        function toggleCamera() {
+            // Implementation to stop/start camera if needed
+            alert("Camera toggle functionality can be added here.");
+        }
+
+        // Set canvas size
+        function resizeCanvas() {
+            canvasElement.width = canvasElement.clientWidth;
+            canvasElement.height = canvasElement.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+    </script>
+</body>
+</html>

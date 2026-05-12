@@ -1,0 +1,5 @@
+flask
+flask-socketio
+pyautogui
+python-socketio
+eventlet
